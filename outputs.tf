@@ -1,0 +1,19 @@
+output "vault_namespace" {
+  value       = kubernetes_namespace.vault.metadata[0].name
+  description = "The Kubernetes namespace where Vault is installed."
+}
+
+output "unseal_strategy" {
+  value       = var.unseal_type
+  description = "The configured auto-unseal mechanism."
+}
+
+output "injector_image_tag" {
+  value       = var.injector_image_tag
+  description = "Applied Vault Agent Injector UBI container tag."
+}
+
+output "server_image_tag" {
+  value       = var.server_image_tag
+  description = "Applied Vault Server UBI container tag."
+}

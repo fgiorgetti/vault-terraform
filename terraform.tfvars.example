@@ -1,0 +1,42 @@
+# Global Settings
+kubeconfig_path    = "~/.kube/config"
+namespace          = "vault"
+helm_chart_version = "0.27.0"
+
+# Enforced UBI Container Image Tags
+injector_image_tag = "1.7.6-ubi"
+server_image_tag   = "2.0.4-ubi"
+
+# Unseal Strategy: "sidecar", "awskms", or "gcpckms"
+unseal_type = "sidecar"
+
+# -----------------------------------------------------------------------------
+# Configuration for Sidecar Unseal Mode
+# -----------------------------------------------------------------------------
+# Provide PGP-encrypted unseal key shares (base64 encoded)
+pgp_encrypted_keys = [
+  "WCJCO...",
+  "WCJCO...",
+  "WCJCO..."
+]
+
+# Path to private GPG key file used to decrypt keys inside the container
+gpg_private_key_path = "./vault-unseal-private.asc"
+
+# Passphrase protecting the GPG private key (leave empty if unpassphrased)
+gpg_key_passphrase = "YourSecretPassphraseHere"
+
+# -----------------------------------------------------------------------------
+# Configuration for Cloud KMS Unseal Mode (Uncomment if using KMS)
+# -----------------------------------------------------------------------------
+# aws_kms_config = {
+#   region     = "us-east-1"
+#   kms_key_id = "arn:aws:kms:us-east-1:123456789012:key/xxxx-xxxx-xxxx"
+# }
+
+# gcp_kms_config = {
+#   project    = "my-gcp-project"
+#   region     = "global"
+#   key_ring   = "vault-keyring"
+#   crypto_key = "vault-unseal-key"
+# }
