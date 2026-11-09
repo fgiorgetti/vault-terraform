@@ -8,6 +8,11 @@ output "unseal_strategy" {
   description = "The configured auto-unseal mechanism."
 }
 
+output "unsealer_image" {
+  value       = var.unsealer_image
+  description = "Applied container image for sidecar auto-unsealer."
+}
+
 output "injector_image_tag" {
   value       = var.injector_image_tag
   description = "Applied Vault Agent Injector UBI container tag."

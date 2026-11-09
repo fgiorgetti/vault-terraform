@@ -4,25 +4,61 @@ resource "kubernetes_namespace" "vault" {
   }
 }
 
-# 1. Kubernetes Secret for PGP-encrypted Unseal Keys
-resource "kubernetes_secret" "vault_unseal_keys" {
-  count = var.unseal_type == "sidecar" && length(var.pgp_encrypted_keys) >= 3 ? 1 : 0
+# 1. RBAC Role enabling Sidecar to update vault-unseal-keys Secret via Kubernetes API
+resource "kubernetes_role" "vault_secret_writer" {
+  metadata {
+    name      = "vault-secret-writer"
+    namespace = kubernetes_namespace.vault.metadata[0].name
+  }
 
+  rule {
+    api_groups     = [""]
+    resources      = ["secrets"]
+    resource_names = ["vault-unseal-keys"]
+    verbs          = ["get", "patch", "update"]
+  }
+}
+
+resource "kubernetes_role_binding" "vault_secret_writer_binding" {
+  metadata {
+    name      = "vault-secret-writer-binding"
+    namespace = kubernetes_namespace.vault.metadata[0].name
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "Role"
+    name      = kubernetes_role.vault_secret_writer.metadata[0].name
+  }
+
+  subject {
+    kind      = "ServiceAccount"
+    name      = "vault"
+    namespace = kubernetes_namespace.vault.metadata[0].name
+  }
+}
+
+# 2. Kubernetes Secret for PGP-encrypted Unseal Keys (Dynamic runtime persistence)
+resource "kubernetes_secret" "vault_unseal_keys" {
   metadata {
     name      = "vault-unseal-keys"
     namespace = kubernetes_namespace.vault.metadata[0].name
   }
 
   data = {
-    "unseal_key_1_pgp" = var.pgp_encrypted_keys[0]
-    "unseal_key_2_pgp" = var.pgp_encrypted_keys[1]
-    "unseal_key_3_pgp" = var.pgp_encrypted_keys[2]
+    "unseal_key_1_pgp" = length(var.pgp_encrypted_keys) >= 1 ? var.pgp_encrypted_keys[0] : ""
+    "unseal_key_2_pgp" = length(var.pgp_encrypted_keys) >= 2 ? var.pgp_encrypted_keys[1] : ""
+    "unseal_key_3_pgp" = length(var.pgp_encrypted_keys) >= 3 ? var.pgp_encrypted_keys[2] : ""
   }
 
   type = "Opaque"
+
+  lifecycle {
+    ignore_changes = [data]
+  }
 }
 
-# 2. Kubernetes Secret for GPG Private Key & Passphrase
+# 3. Kubernetes Secret for GPG Private Key & Passphrase
 resource "kubernetes_secret" "vault_gpg_key" {
   count = var.unseal_type == "sidecar" && var.gpg_private_key_path != "" ? 1 : 0
 
@@ -39,9 +75,28 @@ resource "kubernetes_secret" "vault_gpg_key" {
   type = "Opaque"
 }
 
+# 4. Kubernetes Secret for Base64 PGP Public Key used during auto-init
+resource "kubernetes_secret" "vault_pgp_pubkey" {
+  count = var.unseal_type == "sidecar" && var.pgp_public_key_base64 != "" ? 1 : 0
+
+  metadata {
+    name      = "vault-pgp-pubkey"
+    namespace = kubernetes_namespace.vault.metadata[0].name
+  }
+
+  data = {
+    "pubkey.b64" = var.pgp_public_key_base64
+  }
+
+  type = "Opaque"
+}
+
 locals {
-  # Base Helm configuration with enforced UBI tags
+  # Base Helm configuration enabling OpenShift SCC compliance & Raft integrated HA storage
   base_values = {
+    global = {
+      openshift = true
+    }
     injector = {
       image = {
         tag = var.injector_image_tag
@@ -53,14 +108,22 @@ locals {
       }
       ha = {
         enabled = true
+        raft = {
+          enabled   = true
+          setNodeId = true
+        }
+      }
+      dataStorage = {
+        enabled = true
+        size    = "10Gi"
       }
     }
   }
 
-  # Sidecar Unseal Configuration
-  sidecar_values = var.unseal_type == "sidecar" ? {
+  # Sidecar Helm values using pre-baked custom image (pre-installed GPG & BusyBox)
+  sidecar_values = {
     server = {
-      extraVolumes = [
+      volumes = [
         {
           name   = "unseal-keys"
           secret = { secretName = "vault-unseal-keys" }
@@ -68,22 +131,31 @@ locals {
         {
           name   = "gpg-key"
           secret = { secretName = "vault-gpg-key" }
+        },
+        {
+          name   = "pgp-pubkey"
+          secret = { secretName = "vault-pgp-pubkey" }
         }
       ]
       extraContainers = [
         {
           name            = "vault-auto-unsealer"
-          image           = "alpine:3.19"
+          image           = var.unsealer_image
           imagePullPolicy = "IfNotPresent"
           volumeMounts = [
             {
               name      = "unseal-keys"
               mountPath = "/vault/unseal"
-              readOnly  = true
+              readOnly  = false
             },
             {
               name      = "gpg-key"
               mountPath = "/vault/gpg"
+              readOnly  = true
+            },
+            {
+              name      = "pgp-pubkey"
+              mountPath = "/vault/pgp"
               readOnly  = true
             }
           ]
@@ -91,25 +163,50 @@ locals {
             "/bin/sh",
             "-c",
             <<-EOF
-            # Install runtime dependencies
-            apk add --no-cache gnupg curl > /dev/null 2>&1
-
-            # Setup GPG home directory
             export GNUPGHOME=/tmp/gnupg
             mkdir -p -m 700 "$GNUPGHOME"
 
-            # Import passphrase-protected GPG private key using loopback pinentry
             if [ -f /vault/gpg/passphrase ] && [ -s /vault/gpg/passphrase ]; then
-              gpg --batch --pinentry-mode loopback --passphrase-file /vault/gpg/passphrase --import /vault/gpg/private.key > /dev/null 2>&1
+              gpg --batch --pinentry-mode loopback --passphrase-file /vault/gpg/passphrase --import /vault/gpg/private.key || true
             else
-              gpg --batch --import /vault/gpg/private.key > /dev/null 2>&1
+              gpg --batch --import /vault/gpg/private.key || true
             fi
 
-            echo "GPG key imported successfully. Starting Vault auto-unseal loop..."
+            echo "Starting Vault Zero-Touch Auto-Init & Auto-Unseal daemon (pre-baked GPG)..."
+
+            K8S_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+            NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
 
             while true; do
-              STATUS=$(curl -s -o /dev/null -w "%%{http_code}" http://127.0.0.1:8200/v1/sys/health)
-              if [ "$STATUS" -eq 500 ]; then
+              STATUS=$(wget -S --spider http://127.0.0.1:8200/v1/sys/health 2>&1 | awk '/HTTP\// {print $2}' | head -n 1)
+
+              if [ "$STATUS" = "501" ]; then
+                echo "Vault is uninitialized (HTTP 501). Executing auto-initialization..."
+                PUBKEY=$(cat /vault/pgp/pubkey.b64 | tr -d '\n\r')
+
+                INIT_RESP=$(wget --header="Content-Type: application/json" \
+                                 --post-data="{\"secret_shares\": 3, \"secret_threshold\": 3, \"pgp_keys\": [\"$PUBKEY\", \"$PUBKEY\", \"$PUBKEY\"]}" \
+                                 -q -O - http://127.0.0.1:8200/v1/sys/init)
+
+                KEY1=$(echo "$INIT_RESP" | grep -o '"keys_base64":\[[^]]*\]' | sed 's/.*\["//;s/".*//')
+                KEY2=$(echo "$INIT_RESP" | sed 's/.*"keys_base64":\["[^"]*","//;s/".*//')
+                KEY3=$(echo "$INIT_RESP" | sed 's/.*"keys_base64":\["[^"]*","[^"]*","//;s/"\].*//')
+
+                echo "Vault initialized successfully. Saving unseal keys to Kubernetes secret 'vault-unseal-keys'..."
+
+                PATCH_PAYLOAD="{\"stringData\":{\"unseal_key_1_pgp\":\"$KEY1\",\"unseal_key_2_pgp\":\"$KEY2\",\"unseal_key_3_pgp\":\"$KEY3\"}}"
+                wget --no-check-certificate \
+                     --header="Authorization: Bearer $K8S_TOKEN" \
+                     --header="Content-Type: application/strategic-merge-patch+json" \
+                     --post-data="$PATCH_PAYLOAD" \
+                     --method=PATCH \
+                     -q -O - "https://kubernetes.default.svc/api/v1/namespaces/$NAMESPACE/secrets/vault-unseal-keys" > /dev/null 2>&1
+
+                echo "Secret updated. Proceeding to unseal..."
+                STATUS="500"
+              fi
+
+              if [ "$STATUS" = "500" ]; then
                 echo "Vault is sealed! Decrypting keys and submitting..."
 
                 for file in /vault/unseal/unseal_key_*_pgp; do
@@ -121,7 +218,9 @@ locals {
                     fi
 
                     if [ -n "$UNSEAL_KEY" ]; then
-                      curl -s --request PUT --data "{"key": "$UNSEAL_KEY"}" http://127.0.0.1:8200/v1/sys/unseal > /dev/null
+                      wget --header="Content-Type: application/json" \
+                           --post-data="{\"key\": \"$UNSEAL_KEY\"}" \
+                           -q -O - http://127.0.0.1:8200/v1/sys/unseal > /dev/null 2>&1
                     fi
                   fi
                 done
@@ -133,13 +232,14 @@ locals {
         }
       ]
     }
-  } : {}
+  }
 
-  # AWS KMS Configuration
-  aws_kms_values = var.unseal_type == "awskms" ? {
+  # AWS KMS Helm values override
+  aws_kms_values = {
     server = {
       ha = {
-        config = <<-EOT
+        enabled = true
+        config  = <<-EOT
           seal "awskms" {
             region     = "${var.aws_kms_config != null ? var.aws_kms_config.region : ""}"
             kms_key_id = "${var.aws_kms_config != null ? var.aws_kms_config.kms_key_id : ""}"
@@ -147,13 +247,14 @@ locals {
         EOT
       }
     }
-  } : {}
+  }
 
-  # GCP KMS Configuration
-  gcp_kms_values = var.unseal_type == "gcpckms" ? {
+  # GCP KMS Helm values override
+  gcp_kms_values = {
     server = {
       ha = {
-        config = <<-EOT
+        enabled = true
+        config  = <<-EOT
           seal "gcpckms" {
             project    = "${var.gcp_kms_config != null ? var.gcp_kms_config.project : ""}"
             region     = "${var.gcp_kms_config != null ? var.gcp_kms_config.region : ""}"
@@ -163,7 +264,7 @@ locals {
         EOT
       }
     }
-  } : {}
+  }
 }
 
 resource "helm_release" "vault" {
@@ -173,19 +274,17 @@ resource "helm_release" "vault" {
   namespace  = kubernetes_namespace.vault.metadata[0].name
   version    = var.helm_chart_version
 
-  values = [
-    yamlencode(
-      merge(
-        local.base_values,
-        local.sidecar_values,
-        local.aws_kms_values,
-        local.gcp_kms_values
-      )
-    )
-  ]
+  values = compact([
+    yamlencode(local.base_values),
+    var.unseal_type == "sidecar" ? yamlencode(local.sidecar_values) : "",
+    var.unseal_type == "awskms" ? yamlencode(local.aws_kms_values) : "",
+    var.unseal_type == "gcpckms" ? yamlencode(local.gcp_kms_values) : ""
+  ])
 
   depends_on = [
     kubernetes_secret.vault_unseal_keys,
-    kubernetes_secret.vault_gpg_key
+    kubernetes_secret.vault_gpg_key,
+    kubernetes_secret.vault_pgp_pubkey,
+    kubernetes_role_binding.vault_secret_writer_binding
   ]
 }

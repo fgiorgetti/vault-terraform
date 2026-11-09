@@ -3,28 +3,38 @@ kubeconfig_path    = "~/.kube/config"
 namespace          = "vault"
 helm_chart_version = "0.27.0"
 
-# Enforced UBI Container Image Tags
+# Enforced Red Hat UBI Container Image Tags
 injector_image_tag = "1.7.6-ubi"
 server_image_tag   = "2.0.4-ubi"
+
+# Custom Pre-baked Unsealer Container Image (contains gnupg & busybox)
+unsealer_image = "your-registry.domain.com/vault/vault-unsealer:v1.0.0"
 
 # Unseal Strategy: "sidecar", "awskms", or "gcpckms"
 unseal_type = "sidecar"
 
 # -----------------------------------------------------------------------------
-# Configuration for Sidecar Unseal Mode
+# Configuration for Zero-Touch Sidecar Auto-Init & Auto-Unseal Mode (Model 1)
 # -----------------------------------------------------------------------------
-# Provide PGP-encrypted unseal key shares (base64 encoded)
-pgp_encrypted_keys = [
-  "WCJCO...",
-  "WCJCO...",
-  "WCJCO..."
-]
+# Base64-encoded PGP public key used by sidecar to encrypt generated unseal keys during auto-init
+# Command: gpg --export vault-unseal@domain.local | base64 | tr -d '\n'
+pgp_public_key_base64 = "mQGNBF..."
 
-# Path to private GPG key file used to decrypt keys inside the container
+# Path to private GPG key file (.asc) used by sidecar daemon to decrypt keys during auto-unseal
+# Command: gpg --armor --export-secret-keys vault-unseal@domain.local > vault-unseal-private.asc
 gpg_private_key_path = "./vault-unseal-private.asc"
 
 # Passphrase protecting the GPG private key (leave empty if unpassphrased)
 gpg_key_passphrase = "YourSecretPassphraseHere"
+
+# -----------------------------------------------------------------------------
+# Optional Configuration for Pre-Existing Unseal Keys (Model 2 fallback)
+# -----------------------------------------------------------------------------
+# pgp_encrypted_keys = [
+#   "WCJCO...",
+#   "WCJCO...",
+#   "WCJCO..."
+# ]
 
 # -----------------------------------------------------------------------------
 # Configuration for Cloud KMS Unseal Mode (Uncomment if using KMS)

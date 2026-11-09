@@ -28,6 +28,12 @@ variable "server_image_tag" {
   description = "Vault Server container image tag."
 }
 
+variable "unsealer_image" {
+  type        = string
+  default     = "your-registry.domain.com/vault/vault-unsealer:v1.0.0"
+  description = "Custom sidecar container image with pre-installed GPG and BusyBox for OpenShift SCC dynamic non-root UIDs."
+}
+
 variable "unseal_type" {
   type        = string
   default     = "sidecar"
@@ -39,17 +45,23 @@ variable "unseal_type" {
   }
 }
 
+variable "pgp_public_key_base64" {
+  type        = string
+  default     = ""
+  description = "Base64-encoded PGP public key used by sidecar daemon to encrypt generated Vault unseal keys during auto-init."
+}
+
 variable "pgp_encrypted_keys" {
   type        = list(string)
   sensitive   = true
   default     = []
-  description = "List of base64 PGP-encrypted unseal keys (minimum 3 required for sidecar mode)."
+  description = "Optional pre-existing list of base64 PGP-encrypted unseal keys (if reusing existing secret payloads)."
 }
 
 variable "gpg_private_key_path" {
   type        = string
   default     = ""
-  description = "Path to the local GPG private key file (.asc or .key) used by sidecar to decrypt PGP keys."
+  description = "Path to local GPG private key file (.asc) used by sidecar daemon to decrypt PGP keys during auto-unseal."
 }
 
 variable "gpg_key_passphrase" {
