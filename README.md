@@ -17,7 +17,7 @@ This repository provides a fully automated, production-ready Terraform module to
    - Runs a lightweight sidecar image containing `gnupg`, `busybox`, and `curl`. Because OpenShift blocks runtime package installation (`apk add`) under dynamic non-root UIDs (`Permission denied`), pre-baking binaries guarantees instant startup without egress network dependencies.
 5. **Zero-Touch Auto-Initialization & Auto-Unsealing (Model 1)**:
    - **HTTP 501 (Uninitialized)**: The sidecar daemon detects uninitialized status, reads your mounted base64 PGP public key, calls Vault's `/v1/sys/init` REST API, receives the 3 PGP-encrypted key shares, and patches the `vault-unseal-keys` Kubernetes Secret via the Kubernetes REST API using dedicated RBAC permissions (`kubernetes_role.vault_secret_writer`).
-   - **HTTP 500 (Sealed)**: The sidecar daemon reads the encrypted unseal key shares, decrypts them in memory via GPG (using `/tmp/gnupg` for OpenShift non-root compatibility and loopback passphrase support), and submits unseal shares to `/v1/sys/unseal`.
+   - **HTTP 500 (Sealed)**: The sidecar daemon reads the encrypted unseal key shares, decrypts them in memory via GPG (using `--homedir /tmp/gnupg` for OpenShift non-root compatibility and loopback passphrase support), and submits unseal shares to `/v1/sys/unseal`.
 
 ---
 

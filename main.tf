@@ -164,12 +164,12 @@ locals {
             "-c",
             <<-EOF
             export GNUPGHOME=/tmp/gnupg
-            mkdir -p -m 700 "$GNUPGHOME"
+            mkdir -p -m 700 /tmp/gnupg
 
             if [ -f /vault/gpg/passphrase ] && [ -s /vault/gpg/passphrase ]; then
-              gpg --batch --pinentry-mode loopback --passphrase-file /vault/gpg/passphrase --import /vault/gpg/private.key || true
+              gpg --homedir /tmp/gnupg --batch --pinentry-mode loopback --passphrase-file /vault/gpg/passphrase --import /vault/gpg/private.key || true
             else
-              gpg --batch --import /vault/gpg/private.key || true
+              gpg --homedir /tmp/gnupg --batch --import /vault/gpg/private.key || true
             fi
 
             echo "Starting Vault Zero-Touch Auto-Init & Auto-Unseal daemon..."
@@ -212,9 +212,9 @@ locals {
                 for file in /vault/unseal/unseal_key_*_pgp; do
                   if [ -f "$file" ]; then
                     if [ -f /vault/gpg/passphrase ] && [ -s /vault/gpg/passphrase ]; then
-                      UNSEAL_KEY=$(cat "$file" | base64 -d | gpg --decrypt --batch --pinentry-mode loopback --passphrase-file /vault/gpg/passphrase --quiet 2>/dev/null)
+                      UNSEAL_KEY=$(cat "$file" | base64 -d | gpg --homedir /tmp/gnupg --decrypt --batch --pinentry-mode loopback --passphrase-file /vault/gpg/passphrase --quiet 2>/dev/null)
                     else
-                      UNSEAL_KEY=$(cat "$file" | base64 -d | gpg --decrypt --batch --quiet 2>/dev/null)
+                      UNSEAL_KEY=$(cat "$file" | base64 -d | gpg --homedir /tmp/gnupg --decrypt --batch --quiet 2>/dev/null)
                     fi
 
                     if [ -n "$UNSEAL_KEY" ]; then
