@@ -7,7 +7,7 @@ helm_chart_version = "0.27.0"
 injector_image_tag = "1.7.6-ubi"
 server_image_tag   = "2.0.4-ubi"
 
-# Custom Pre-baked Unsealer Container Image (contains gnupg & busybox)
+# Custom Pre-baked Unsealer Container Image (contains gnupg, busybox, and curl)
 unsealer_image = "your-registry.domain.com/vault/vault-unsealer:v1.0.0"
 
 # Unseal Strategy: "sidecar", "awskms", or "gcpckms"
@@ -16,7 +16,7 @@ unseal_type = "sidecar"
 # -----------------------------------------------------------------------------
 # Configuration for Zero-Touch Sidecar Auto-Init & Auto-Unseal Mode (Model 1)
 # -----------------------------------------------------------------------------
-# Base64-encoded PGP public key used by sidecar to encrypt generated unseal keys during auto-init
+# Base64-encoded PGP public key used by sidecar daemon to encrypt generated unseal keys during auto-init
 # Command: gpg --export vault-unseal@domain.local | base64 | tr -d '\n'
 pgp_public_key_base64 = "mQGNBF..."
 

@@ -120,7 +120,7 @@ locals {
     }
   }
 
-  # Sidecar Helm values using pre-baked custom image (pre-installed GPG & BusyBox)
+  # Sidecar Helm values using pre-baked custom image (GPG, BusyBox, curl)
   sidecar_values = {
     server = {
       volumes = [
@@ -172,7 +172,7 @@ locals {
               gpg --batch --import /vault/gpg/private.key || true
             fi
 
-            echo "Starting Vault Zero-Touch Auto-Init & Auto-Unseal daemon (pre-baked GPG)..."
+            echo "Starting Vault Zero-Touch Auto-Init & Auto-Unseal daemon..."
 
             K8S_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
             NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
@@ -195,14 +195,14 @@ locals {
                 echo "Vault initialized successfully. Saving unseal keys to Kubernetes secret 'vault-unseal-keys'..."
 
                 PATCH_PAYLOAD="{\"stringData\":{\"unseal_key_1_pgp\":\"$KEY1\",\"unseal_key_2_pgp\":\"$KEY2\",\"unseal_key_3_pgp\":\"$KEY3\"}}"
-                wget --no-check-certificate \
-                     --header="Authorization: Bearer $K8S_TOKEN" \
-                     --header="Content-Type: application/strategic-merge-patch+json" \
-                     --post-data="$PATCH_PAYLOAD" \
-                     --method=PATCH \
-                     -q -O - "https://kubernetes.default.svc/api/v1/namespaces/$NAMESPACE/secrets/vault-unseal-keys" > /dev/null 2>&1
+                curl -s -k \
+                     -X PATCH \
+                     -H "Authorization: Bearer $K8S_TOKEN" \
+                     -H "Content-Type: application/strategic-merge-patch+json" \
+                     -d "$PATCH_PAYLOAD" \
+                     "https://kubernetes.default.svc/api/v1/namespaces/$NAMESPACE/secrets/vault-unseal-keys" > /dev/null 2>&1
 
-                echo "Secret updated. Proceeding to unseal..."
+                echo "Secret updated successfully. Proceeding to unseal..."
                 STATUS="500"
               fi
 

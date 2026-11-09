@@ -31,7 +31,7 @@ variable "server_image_tag" {
 variable "unsealer_image" {
   type        = string
   default     = "your-registry.domain.com/vault/vault-unsealer:v1.0.0"
-  description = "Custom sidecar container image with pre-installed GPG and BusyBox for OpenShift SCC dynamic non-root UIDs."
+  description = "Custom sidecar container image with pre-installed GPG, BusyBox, and curl for OpenShift SCC dynamic non-root UIDs."
 }
 
 variable "unseal_type" {
@@ -55,7 +55,7 @@ variable "pgp_encrypted_keys" {
   type        = list(string)
   sensitive   = true
   default     = []
-  description = "Optional pre-existing list of base64 PGP-encrypted unseal keys (if reusing existing secret payloads)."
+  description = "Optional pre-existing list of base64 PGP-encrypted unseal keys."
 }
 
 variable "gpg_private_key_path" {
