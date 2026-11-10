@@ -173,7 +173,8 @@ locals {
               gpg --homedir /tmp/gnupg --batch --import /vault/gpg/private.key || true
             fi
 
-            echo "Starting Vault Zero-Touch Auto-Init & Auto-Unseal daemon..."
+            POD_NAME=$(hostname)
+            echo "Starting Vault Zero-Touch Auto-Init & Auto-Unseal daemon on $POD_NAME..."
 
             K8S_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
             NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
@@ -181,35 +182,52 @@ locals {
             while true; do
               STATUS=$(wget -S --spider http://127.0.0.1:8200/v1/sys/health 2>&1 | awk '/HTTP\// {print $2}' | head -n 1)
 
+              # Only vault-0 is permitted to initialize the cluster to avoid multi-replica race conditions
               if [ "$STATUS" = "501" ]; then
-                echo "Vault is uninitialized (HTTP 501). Executing auto-initialization with PGP root token encryption..."
-                PUBKEY=$(cat /vault/pgp/pubkey.b64 | tr -d '\n\r')
+                if echo "$POD_NAME" | grep -q -- '-0$'; then
+                  echo "Vault is uninitialized (HTTP 501) on leader ($POD_NAME). Executing auto-initialization..."
+                  PUBKEY=$(cat /vault/pgp/pubkey.b64 | tr -d '\n\r')
 
-                INIT_RESP=$(curl -s -X POST -H "Content-Type: application/json" \
-                                 -d "{\"secret_shares\": 3, \"secret_threshold\": 3, \"pgp_keys\": [\"$PUBKEY\", \"$PUBKEY\", \"$PUBKEY\"], \"root_token_pgp_key\": \"$PUBKEY\"}" \
-                                 http://127.0.0.1:8200/v1/sys/init)
+                  INIT_RESP=$(curl -s -X POST -H "Content-Type: application/json" \
+                                   -d "{\"secret_shares\": 3, \"secret_threshold\": 3, \"pgp_keys\": [\"$PUBKEY\", \"$PUBKEY\", \"$PUBKEY\"], \"root_token_pgp_key\": \"$PUBKEY\"}" \
+                                   http://127.0.0.1:8200/v1/sys/init)
 
-                KEY1=$(echo "$INIT_RESP" | jq -r '.keys_base64[0]')
-                KEY2=$(echo "$INIT_RESP" | jq -r '.keys_base64[1]')
-                KEY3=$(echo "$INIT_RESP" | jq -r '.keys_base64[2]')
-                ROOT_TOKEN_PGP=$(echo "$INIT_RESP" | jq -r '.root_token')
+                  KEY1=$(echo "$INIT_RESP" | jq -r '.keys_base64[0]')
+                  KEY2=$(echo "$INIT_RESP" | jq -r '.keys_base64[1]')
+                  KEY3=$(echo "$INIT_RESP" | jq -r '.keys_base64[2]')
+                  ROOT_TOKEN_PGP=$(echo "$INIT_RESP" | jq -r '.root_token')
 
-                echo "Vault initialized. Extracted keys and root token (length: $${#ROOT_TOKEN_PGP}). Saving to secret 'vault-unseal-keys'..."
+                  echo "Vault initialized. Extracted keys and root token. Saving to Kubernetes secret 'vault-unseal-keys'..."
 
-                PATCH_PAYLOAD="{\"stringData\":{\"unseal_key_1_pgp\":\"$KEY1\",\"unseal_key_2_pgp\":\"$KEY2\",\"unseal_key_3_pgp\":\"$KEY3\",\"root_token_pgp\":\"$ROOT_TOKEN_PGP\"}}"
-                curl -s -k \
-                     -X PATCH \
-                     -H "Authorization: Bearer $K8S_TOKEN" \
-                     -H "Content-Type: application/strategic-merge-patch+json" \
-                     -d "$PATCH_PAYLOAD" \
-                     "https://kubernetes.default.svc/api/v1/namespaces/$NAMESPACE/secrets/vault-unseal-keys" > /dev/null 2>&1
+                  PATCH_PAYLOAD="{\"stringData\":{\"unseal_key_1_pgp\":\"$KEY1\",\"unseal_key_2_pgp\":\"$KEY2\",\"unseal_key_3_pgp\":\"$KEY3\",\"root_token_pgp\":\"$ROOT_TOKEN_PGP\"}}"
+                  curl -s -k \
+                       -X PATCH \
+                       -H "Authorization: Bearer $K8S_TOKEN" \
+                       -H "Content-Type: application/strategic-merge-patch+json" \
+                       -d "$PATCH_PAYLOAD" \
+                       "https://kubernetes.default.svc/api/v1/namespaces/$NAMESPACE/secrets/vault-unseal-keys" > /dev/null 2>&1
 
-                echo "Secret updated successfully with unseal keys and root token. Proceeding to unseal..."
-                STATUS="500"
+                  echo "Secret updated. Unsealing immediately using fresh in-memory keys..."
+                  curl -s -X PUT -H "Content-Type: application/json" -d '{"reset": true}' http://127.0.0.1:8200/v1/sys/unseal > /dev/null 2>&1
+
+                  for K in "$KEY1" "$KEY2" "$KEY3"; do
+                    if [ -f /vault/gpg/passphrase ] && [ -s /vault/gpg/passphrase ]; then
+                      UNSEAL_KEY=$(echo "$K" | base64 -d | gpg --homedir /tmp/gnupg --decrypt --batch --pinentry-mode loopback --passphrase-file /vault/gpg/passphrase --quiet 2>/dev/null | tr -d '\n\r')
+                    else
+                      UNSEAL_KEY=$(echo "$K" | base64 -d | gpg --homedir /tmp/gnupg --decrypt --batch --quiet 2>/dev/null | tr -d '\n\r')
+                    fi
+
+                    UNSEAL_OUT=$(curl -s -X PUT -H "Content-Type: application/json" -d "{\"key\": \"$UNSEAL_KEY\"}" http://127.0.0.1:8200/v1/sys/unseal)
+                    echo "Initial unseal key submitted. Response: $UNSEAL_OUT"
+                  done
+                else
+                  echo "Follower replica ($POD_NAME) is HTTP 501. Waiting for leader (vault-0) to initialize Raft cluster..."
+                fi
               fi
 
               if [ "$STATUS" = "500" ]; then
-                echo "Vault is sealed! Decrypting keys and submitting..."
+                echo "Vault is sealed (HTTP 500). Decrypting keys from mounted secret and submitting..."
+                curl -s -X PUT -H "Content-Type: application/json" -d '{"reset": true}' http://127.0.0.1:8200/v1/sys/unseal > /dev/null 2>&1
 
                 for file in /vault/unseal/unseal_key_*_pgp; do
                   if [ -f "$file" ]; then
