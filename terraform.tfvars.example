@@ -7,7 +7,7 @@ helm_chart_version = "0.27.0"
 injector_image_tag = "1.7.6-ubi"
 server_image_tag   = "2.0.4-ubi"
 
-# Custom Pre-baked Unsealer Container Image (contains gnupg, busybox, and curl)
+# Custom Pre-baked Unsealer Container Image (contains gnupg, busybox, curl, and jq)
 unsealer_image = "your-registry.domain.com/vault/vault-unsealer:v1.0.0"
 
 # Unseal Strategy: "sidecar", "awskms", or "gcpckms"

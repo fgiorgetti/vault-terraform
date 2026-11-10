@@ -120,7 +120,7 @@ locals {
     }
   }
 
-  # Sidecar Helm values using pre-baked custom image (GPG, BusyBox, curl)
+  # Sidecar Helm values using pre-baked custom image (GPG, BusyBox, curl, jq)
   sidecar_values = {
     server = {
       volumes = [
@@ -184,13 +184,13 @@ locals {
                 echo "Vault is uninitialized (HTTP 501). Executing auto-initialization..."
                 PUBKEY=$(cat /vault/pgp/pubkey.b64 | tr -d '\n\r')
 
-                INIT_RESP=$(wget --header="Content-Type: application/json" \
-                                 --post-data="{\"secret_shares\": 3, \"secret_threshold\": 3, \"pgp_keys\": [\"$PUBKEY\", \"$PUBKEY\", \"$PUBKEY\"]}" \
-                                 -q -O - http://127.0.0.1:8200/v1/sys/init)
+                INIT_RESP=$(curl -s -X POST -H "Content-Type: application/json" \
+                                 -d "{\"secret_shares\": 3, \"secret_threshold\": 3, \"pgp_keys\": [\"$PUBKEY\", \"$PUBKEY\", \"$PUBKEY\"]}" \
+                                 http://127.0.0.1:8200/v1/sys/init)
 
-                KEY1=$(echo "$INIT_RESP" | grep -o '"keys_base64":\[[^]]*\]' | sed 's/.*\["//;s/".*//')
-                KEY2=$(echo "$INIT_RESP" | sed 's/.*"keys_base64":\["[^"]*","//;s/".*//')
-                KEY3=$(echo "$INIT_RESP" | sed 's/.*"keys_base64":\["[^"]*","[^"]*","//;s/"\].*//')
+                KEY1=$(echo "$INIT_RESP" | jq -r '.keys_base64[0]')
+                KEY2=$(echo "$INIT_RESP" | jq -r '.keys_base64[1]')
+                KEY3=$(echo "$INIT_RESP" | jq -r '.keys_base64[2]')
 
                 echo "Vault initialized successfully. Saving unseal keys to Kubernetes secret 'vault-unseal-keys'..."
 
@@ -212,15 +212,14 @@ locals {
                 for file in /vault/unseal/unseal_key_*_pgp; do
                   if [ -f "$file" ]; then
                     if [ -f /vault/gpg/passphrase ] && [ -s /vault/gpg/passphrase ]; then
-                      UNSEAL_KEY=$(cat "$file" | base64 -d | gpg --homedir /tmp/gnupg --decrypt --batch --pinentry-mode loopback --passphrase-file /vault/gpg/passphrase --quiet 2>/dev/null)
+                      UNSEAL_KEY=$(cat "$file" | base64 -d | gpg --homedir /tmp/gnupg --decrypt --batch --pinentry-mode loopback --passphrase-file /vault/gpg/passphrase --quiet 2>/dev/null | tr -d '\n\r')
                     else
-                      UNSEAL_KEY=$(cat "$file" | base64 -d | gpg --homedir /tmp/gnupg --decrypt --batch --quiet 2>/dev/null)
+                      UNSEAL_KEY=$(cat "$file" | base64 -d | gpg --homedir /tmp/gnupg --decrypt --batch --quiet 2>/dev/null | tr -d '\n\r')
                     fi
 
                     if [ -n "$UNSEAL_KEY" ]; then
-                      wget --header="Content-Type: application/json" \
-                           --post-data="{\"key\": \"$UNSEAL_KEY\"}" \
-                           -q -O - http://127.0.0.1:8200/v1/sys/unseal > /dev/null 2>&1
+                      UNSEAL_OUT=$(curl -s -X PUT -H "Content-Type: application/json" -d "{\"key\": \"$UNSEAL_KEY\"}" http://127.0.0.1:8200/v1/sys/unseal)
+                      echo "Unseal key submitted ($file). Response: $UNSEAL_OUT"
                     fi
                   fi
                 done

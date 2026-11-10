@@ -14,10 +14,11 @@ This repository provides a fully automated, production-ready Terraform module to
 3. **Raft Integrated Storage Engine**:
    - Configured via `server.ha.raft.enabled = true` with 10Gi persistent volumes (`server.dataStorage.enabled = true`), eliminating external Consul cluster dependencies.
 4. **Pre-Baked Sidecar Image (`Dockerfile`)**:
-   - Runs a lightweight sidecar image containing `gnupg`, `busybox`, and `curl`. Because OpenShift blocks runtime package installation (`apk add`) under dynamic non-root UIDs (`Permission denied`), pre-baking binaries guarantees instant startup without egress network dependencies.
+   - Runs a lightweight sidecar image containing `gnupg`, `busybox`, `curl`, and `jq`. Because OpenShift blocks runtime package installation (`apk add`) under dynamic non-root UIDs (`Permission denied`), pre-baking binaries guarantees instant startup without egress network dependencies.
 5. **Zero-Touch Auto-Initialization & Auto-Unsealing (Model 1)**:
-   - **HTTP 501 (Uninitialized)**: The sidecar daemon detects uninitialized status, reads your mounted base64 PGP public key, calls Vault's `/v1/sys/init` REST API, receives the 3 PGP-encrypted key shares, and patches the `vault-unseal-keys` Kubernetes Secret via the Kubernetes REST API using dedicated RBAC permissions (`kubernetes_role.vault_secret_writer`).
-   - **HTTP 500 (Sealed)**: The sidecar daemon reads the encrypted unseal key shares, decrypts them in memory via GPG (using `--homedir /tmp/gnupg` for OpenShift non-root compatibility and loopback passphrase support), and submits unseal shares to `/v1/sys/unseal`.
+   - **HTTP 501 (Uninitialized)**: The sidecar daemon detects uninitialized status, reads your mounted base64 PGP public key, calls Vault's `/v1/sys/init` REST API, receives the 3 PGP-encrypted key shares, parses them cleanly with `jq`, and patches the `vault-unseal-keys` Kubernetes Secret via the Kubernetes REST API using dedicated RBAC permissions (`kubernetes_role.vault_secret_writer`).
+   - **HTTP 500 (Sealed)**: The sidecar daemon reads the encrypted unseal key shares, decrypts them in memory via GPG (using `--homedir /tmp/gnupg` for OpenShift non-root compatibility and loopback passphrase support), strips newlines via `tr -d '
+'`, and submits unseal shares sequentially to `/v1/sys/unseal` using `curl -X PUT`.
 
 ---
 
@@ -96,6 +97,9 @@ Vault is uninitialized (HTTP 501). Executing auto-initialization...
 Vault initialized successfully. Saving unseal keys to Kubernetes secret 'vault-unseal-keys'...
 Secret updated successfully. Proceeding to unseal...
 Vault is sealed! Decrypting keys and submitting...
+Unseal key submitted (/vault/unseal/unseal_key_1_pgp). Response: {"type":"shamir",...,"progress":1}
+Unseal key submitted (/vault/unseal/unseal_key_2_pgp). Response: {"type":"shamir",...,"progress":2}
+Unseal key submitted (/vault/unseal/unseal_key_3_pgp). Response: {"type":"shamir",...,"sealed":false}
 ```
 
 ### Check Persisted Unseal Keys Secret
@@ -133,8 +137,8 @@ terraform apply
 | :--- | :--- |
 | `versions.tf` | Terraform & provider version pins (`helm ~> 2.12.0`, `kubernetes ~> 2.26.0`). |
 | `variables.tf` | Input variables, validation rules, and default container image tags. |
-| `main.tf` | Namespace, Kubernetes Secrets, RBAC Role/Binding, Raft storage, OpenShift SCC integration (`global.openshift = true`), and the sidecar auto-init/unseal daemon script using `curl` and `wget`. |
+| `main.tf` | Namespace, Kubernetes Secrets, RBAC Role/Binding, Raft storage, OpenShift SCC integration (`global.openshift = true`), and the sidecar auto-init/unseal daemon script using `curl`, `wget`, and `jq`. |
 | `outputs.tf` | Output variables for namespace, unseal strategy, and container image tags. |
 | `terraform.tfvars.example` | Example variable configuration template for Model 1 deployment. |
-| `Dockerfile` | Lightweight Alpine image pre-baked with `gnupg`, `busybox`, and `curl` for non-root OpenShift execution. |
+| `Dockerfile` | Lightweight Alpine image pre-baked with `gnupg`, `busybox`, `curl`, and `jq` for non-root OpenShift execution. |
 | `README.md` | Comprehensive architectural principles, setup instructions, and troubleshooting commands. |
