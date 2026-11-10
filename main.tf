@@ -234,7 +234,7 @@ locals {
                 fi
               fi
 
-              if [ "$STATUS" = "500" ]; then
+              if [ "$STATUS" = "500" ] || [ "$STATUS" = "503" ]; then
                 echo "Vault is sealed (HTTP 500). Decrypting keys from mounted secret and submitting..."
                 curl -s -X PUT -H "Content-Type: application/json" -d '{"reset": true}' http://127.0.0.1:8200/v1/sys/unseal > /dev/null 2>&1
 
