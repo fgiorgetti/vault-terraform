@@ -15,5 +15,15 @@ if [ -z "$ENCRYPTED_TOKEN" ] || [ "$ENCRYPTED_TOKEN" = "null" ]; then
   exit 1
 fi
 
-# Decrypt the root token using local GPG private key
-echo "$ENCRYPTED_TOKEN" | base64 -d | gpg --decrypt --quiet
+# Secret .data is base64-encoded by Kubernetes.
+# Vault's API also returns ciphertext as a base64 string.
+# Layer 1: Decode Kubernetes secret .data layer
+PAYLOAD=$(echo "$ENCRYPTED_TOKEN" | base64 -d)
+
+# Layer 2: Decode Vault API base64 ciphertext to binary OpenPGP packets and decrypt with local GPG
+GPG_ARGS=("--quiet")
+if [ -n "${VAULT_GPG_PASSPHRASE:-}" ]; then
+  GPG_ARGS+=("--batch" "--pinentry-mode" "loopback" "--passphrase" "$VAULT_GPG_PASSPHRASE")
+fi
+
+echo "$PAYLOAD" | base64 -d | gpg --decrypt "${GPG_ARGS[@]}"

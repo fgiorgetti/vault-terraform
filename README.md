@@ -95,6 +95,7 @@ Or pass custom namespace/secret names:
 ```bash
 oc get secret vault-unseal-keys -n vault -o jsonpath='{.data.root_token_pgp}' \
   | base64 -d \
+  | base64 -d \
   | gpg --decrypt
 ```
 

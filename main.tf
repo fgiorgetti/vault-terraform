@@ -221,7 +221,16 @@ locals {
                     echo "Initial unseal key submitted. Response: $UNSEAL_OUT"
                   done
                 else
-                  echo "Follower replica ($POD_NAME) is HTTP 501. Waiting for leader (vault-0) to initialize Raft cluster..."
+                  LEADER_STATUS=$(wget -S --spider http://vault-0.vault-internal:8200/v1/sys/health 2>&1 | awk '/HTTP\// {print $2}' | head -n 1)
+                  if [ "$LEADER_STATUS" = "200" ] || [ "$LEADER_STATUS" = "500" ]; then
+                    echo "Follower replica ($POD_NAME) is HTTP 501 and leader (vault-0) is active ($LEADER_STATUS). Joining Raft cluster..."
+                    JOIN_RESP=$(curl -s -X POST -H "Content-Type: application/json" \
+                                     -d '{"leader_api_addr": "http://vault-0.vault-internal:8200"}' \
+                                     http://127.0.0.1:8200/v1/sys/storage/raft/join)
+                    echo "Raft join result for $POD_NAME: $JOIN_RESP"
+                  else
+                    echo "Follower replica ($POD_NAME) is HTTP 501. Waiting for leader (vault-0) to become ready (current: $LEADER_STATUS)..."
+                  fi
                 fi
               fi
 
