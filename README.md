@@ -16,9 +16,8 @@ This repository provides a fully automated, production-ready Terraform module to
 4. **Pre-Baked Sidecar Image (`Dockerfile`)**:
    - Runs a lightweight sidecar image containing `gnupg`, `busybox`, `curl`, and `jq`. Because OpenShift blocks runtime package installation (`apk add`) under dynamic non-root UIDs (`Permission denied`), pre-baking binaries guarantees instant startup without egress network dependencies.
 5. **Zero-Touch Auto-Initialization with Root Token Persistence (Model 1)**:
-   - **HTTP 501 (Uninitialized)**: The sidecar daemon detects uninitialized status, reads your mounted base64 PGP public key, calls Vault's `/v1/sys/init` REST API with `"root_token_pgp_key": "$PUBKEY"`, receives the 3 PGP-encrypted key shares AND the PGP-encrypted root token, parses them cleanly with `jq`, and patches the `vault-unseal-keys` Kubernetes Secret (`root_token_pgp` included) via the Kubernetes REST API using dedicated RBAC permissions (`kubernetes_role.vault_secret_writer`).
-   - **HTTP 500 (Sealed)**: The sidecar daemon reads the encrypted unseal key shares, decrypts them in memory via GPG (using `--homedir /tmp/gnupg` for OpenShift non-root compatibility and loopback passphrase support), strips newlines via `tr -d '
-'`, and submits unseal shares sequentially to `/v1/sys/unseal` using `curl -X PUT`.
+   - **HTTP 501 (Uninitialized)**: The sidecar daemon detects uninitialized status, reads your mounted base64 PGP public key, calls Vault's `/v1/sys/init` REST API with `"root_token_pgp_key": "$PUBKEY"`, receives the 3 PGP-encrypted key shares AND the PGP-encrypted root token (in response field `.root_token`), parses them cleanly with `jq`, and patches the `vault-unseal-keys` Kubernetes Secret (`root_token_pgp` included) via the Kubernetes REST API using dedicated RBAC permissions (`kubernetes_role.vault_secret_writer`).
+   - **HTTP 500 (Sealed)**: The sidecar daemon reads the encrypted unseal key shares, decrypts them in memory via GPG (using `--homedir /tmp/gnupg` for OpenShift non-root compatibility and loopback passphrase support), strips newlines via `tr -d '\n\r'`, and submits unseal shares sequentially to `/v1/sys/unseal` using `curl -X PUT`.
 
 ---
 
@@ -41,8 +40,7 @@ gpg --full-generate-key
 
 1. **Export Base64 PGP Public Key** (used by sidecar for `/v1/sys/init`):
    ```bash
-   gpg --export vault-unseal@domain.local | base64 | tr -d '
-'
+   gpg --export vault-unseal@domain.local | base64 | tr -d '\n'
    ```
 2. **Export ASCII Private Key** (mounted into pod for decryption):
    ```bash
@@ -79,25 +77,24 @@ terraform apply /tmp/plan
 
 ## 3. Retrieving and Decrypting the Root Token
 
-Once Vault auto-initializes and unseals, the encrypted root token is stored directly in Kubernetes:
+Once Vault auto-initializes and unseals, the encrypted root token is stored directly in Kubernetes.
 
-### On Your Workstation:
+### Using the Included Helper Script:
+```bash
+chmod +x retrieve-root-token.sh
+./retrieve-root-token.sh
+```
+
+Or pass custom namespace/secret names:
+```bash
+./retrieve-root-token.sh custom-vault-namespace custom-secret-name
+```
+
+### Manually via CLI:
 ```bash
 oc get secret vault-unseal-keys -n vault -o jsonpath='{.data.root_token_pgp}' \
   | base64 -d \
   | gpg --decrypt
-```
-
-### Inside the Sidecar Pod:
-```bash
-oc exec -n vault pod/vault-0 -c vault-auto-unsealer -- /bin/sh -c '
-export GNUPGHOME=/tmp/gnupg
-if [ -f /vault/gpg/passphrase ] && [ -s /vault/gpg/passphrase ]; then
-  cat /vault/unseal/root_token_pgp | base64 -d | gpg --homedir /tmp/gnupg --decrypt --batch --pinentry-mode loopback --passphrase-file /vault/gpg/passphrase --quiet
-else
-  cat /vault/unseal/root_token_pgp | base64 -d | gpg --homedir /tmp/gnupg --decrypt --batch --quiet
-fi
-'
 ```
 
 ---
@@ -128,6 +125,7 @@ terraform apply
 | `variables.tf` | Input variables, validation rules, and default container image tags. |
 | `main.tf` | Namespace, Kubernetes Secrets, RBAC Role/Binding, Raft storage, OpenShift SCC integration (`global.openshift = true`), and the sidecar auto-init/unseal daemon script with `root_token_pgp` capture. |
 | `outputs.tf` | Output variables for namespace, unseal strategy, and container image tags. |
-| `terraform.tfvars.example` | Example variable configuration template with Model 1 and Model 2 / Cloud KMS sections restored. |
+| `terraform.tfvars.example` | Example variable configuration template with Model 1 and Model 2 / Cloud KMS sections. |
+| `retrieve-root-token.sh` | Shell script to fetch and decrypt the root token from Kubernetes using GPG. |
 | `Dockerfile` | Lightweight Alpine image pre-baked with `gnupg`, `busybox`, `curl`, and `jq` for non-root OpenShift execution. |
 | `README.md` | Comprehensive architectural principles, setup instructions, root token retrieval, and troubleshooting commands. |

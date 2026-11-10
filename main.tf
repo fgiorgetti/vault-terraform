@@ -192,9 +192,9 @@ locals {
                 KEY1=$(echo "$INIT_RESP" | jq -r '.keys_base64[0]')
                 KEY2=$(echo "$INIT_RESP" | jq -r '.keys_base64[1]')
                 KEY3=$(echo "$INIT_RESP" | jq -r '.keys_base64[2]')
-                ROOT_TOKEN_PGP=$(echo "$INIT_RESP" | jq -r '.root_token_pgp')
+                ROOT_TOKEN_PGP=$(echo "$INIT_RESP" | jq -r '.root_token')
 
-                echo "Vault initialized successfully. Saving unseal keys and root token to Kubernetes secret 'vault-unseal-keys'..."
+                echo "Vault initialized. Extracted keys and root token (length: $${#ROOT_TOKEN_PGP}). Saving to secret 'vault-unseal-keys'..."
 
                 PATCH_PAYLOAD="{\"stringData\":{\"unseal_key_1_pgp\":\"$KEY1\",\"unseal_key_2_pgp\":\"$KEY2\",\"unseal_key_3_pgp\":\"$KEY3\",\"root_token_pgp\":\"$ROOT_TOKEN_PGP\"}}"
                 curl -s -k \
