@@ -48,7 +48,7 @@ variable "unseal_type" {
 variable "pgp_public_key_base64" {
   type        = string
   default     = ""
-  description = "Base64-encoded PGP public key used by sidecar daemon to encrypt generated Vault unseal keys during auto-init."
+  description = "Base64-encoded PGP public key used by sidecar daemon to encrypt generated Vault unseal keys and root token during auto-init."
 }
 
 variable "pgp_encrypted_keys" {

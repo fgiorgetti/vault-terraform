@@ -16,7 +16,7 @@ unseal_type = "sidecar"
 # -----------------------------------------------------------------------------
 # Configuration for Zero-Touch Sidecar Auto-Init & Auto-Unseal Mode (Model 1)
 # -----------------------------------------------------------------------------
-# Base64-encoded PGP public key used by sidecar daemon to encrypt generated unseal keys during auto-init
+# Base64-encoded PGP public key used by sidecar daemon to encrypt generated unseal keys & root token during auto-init
 # Command: gpg --export vault-unseal@domain.local | base64 | tr -d '\n'
 pgp_public_key_base64 = "mQGNBF..."
 

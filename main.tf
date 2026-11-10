@@ -38,7 +38,7 @@ resource "kubernetes_role_binding" "vault_secret_writer_binding" {
   }
 }
 
-# 2. Kubernetes Secret for PGP-encrypted Unseal Keys (Dynamic runtime persistence)
+# 2. Kubernetes Secret for PGP-encrypted Unseal Keys & Root Token (Dynamic runtime persistence)
 resource "kubernetes_secret" "vault_unseal_keys" {
   metadata {
     name      = "vault-unseal-keys"
@@ -49,6 +49,7 @@ resource "kubernetes_secret" "vault_unseal_keys" {
     "unseal_key_1_pgp" = length(var.pgp_encrypted_keys) >= 1 ? var.pgp_encrypted_keys[0] : ""
     "unseal_key_2_pgp" = length(var.pgp_encrypted_keys) >= 2 ? var.pgp_encrypted_keys[1] : ""
     "unseal_key_3_pgp" = length(var.pgp_encrypted_keys) >= 3 ? var.pgp_encrypted_keys[2] : ""
+    "root_token_pgp"   = ""
   }
 
   type = "Opaque"
@@ -181,20 +182,21 @@ locals {
               STATUS=$(wget -S --spider http://127.0.0.1:8200/v1/sys/health 2>&1 | awk '/HTTP\// {print $2}' | head -n 1)
 
               if [ "$STATUS" = "501" ]; then
-                echo "Vault is uninitialized (HTTP 501). Executing auto-initialization..."
+                echo "Vault is uninitialized (HTTP 501). Executing auto-initialization with PGP root token encryption..."
                 PUBKEY=$(cat /vault/pgp/pubkey.b64 | tr -d '\n\r')
 
                 INIT_RESP=$(curl -s -X POST -H "Content-Type: application/json" \
-                                 -d "{\"secret_shares\": 3, \"secret_threshold\": 3, \"pgp_keys\": [\"$PUBKEY\", \"$PUBKEY\", \"$PUBKEY\"]}" \
+                                 -d "{\"secret_shares\": 3, \"secret_threshold\": 3, \"pgp_keys\": [\"$PUBKEY\", \"$PUBKEY\", \"$PUBKEY\"], \"root_token_pgp_key\": \"$PUBKEY\"}" \
                                  http://127.0.0.1:8200/v1/sys/init)
 
                 KEY1=$(echo "$INIT_RESP" | jq -r '.keys_base64[0]')
                 KEY2=$(echo "$INIT_RESP" | jq -r '.keys_base64[1]')
                 KEY3=$(echo "$INIT_RESP" | jq -r '.keys_base64[2]')
+                ROOT_TOKEN_PGP=$(echo "$INIT_RESP" | jq -r '.root_token_pgp')
 
-                echo "Vault initialized successfully. Saving unseal keys to Kubernetes secret 'vault-unseal-keys'..."
+                echo "Vault initialized successfully. Saving unseal keys and root token to Kubernetes secret 'vault-unseal-keys'..."
 
-                PATCH_PAYLOAD="{\"stringData\":{\"unseal_key_1_pgp\":\"$KEY1\",\"unseal_key_2_pgp\":\"$KEY2\",\"unseal_key_3_pgp\":\"$KEY3\"}}"
+                PATCH_PAYLOAD="{\"stringData\":{\"unseal_key_1_pgp\":\"$KEY1\",\"unseal_key_2_pgp\":\"$KEY2\",\"unseal_key_3_pgp\":\"$KEY3\",\"root_token_pgp\":\"$ROOT_TOKEN_PGP\"}}"
                 curl -s -k \
                      -X PATCH \
                      -H "Authorization: Bearer $K8S_TOKEN" \
@@ -202,7 +204,7 @@ locals {
                      -d "$PATCH_PAYLOAD" \
                      "https://kubernetes.default.svc/api/v1/namespaces/$NAMESPACE/secrets/vault-unseal-keys" > /dev/null 2>&1
 
-                echo "Secret updated successfully. Proceeding to unseal..."
+                echo "Secret updated successfully with unseal keys and root token. Proceeding to unseal..."
                 STATUS="500"
               fi
 

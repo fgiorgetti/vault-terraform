@@ -1,6 +1,6 @@
 # HashiCorp Vault Zero-Touch Deployment on OpenShift via Terraform (Model 1)
 
-This repository provides a fully automated, production-ready Terraform module to deploy High-Availability (HA) HashiCorp Vault on OpenShift or Kubernetes using Helm, featuring **Model 1: Zero-Touch Auto-Initialization**, dynamic PGP key persistence, Raft storage, and OpenShift `restricted-v2` Security Context Constraint (SCC) compliance.
+This repository provides a fully automated, production-ready Terraform module to deploy High-Availability (HA) HashiCorp Vault on OpenShift or Kubernetes using Helm, featuring **Model 1: Zero-Touch Auto-Initialization**, dynamic PGP key and root token persistence, Raft storage, and OpenShift `restricted-v2` Security Context Constraint (SCC) compliance.
 
 ---
 
@@ -15,8 +15,8 @@ This repository provides a fully automated, production-ready Terraform module to
    - Configured via `server.ha.raft.enabled = true` with 10Gi persistent volumes (`server.dataStorage.enabled = true`), eliminating external Consul cluster dependencies.
 4. **Pre-Baked Sidecar Image (`Dockerfile`)**:
    - Runs a lightweight sidecar image containing `gnupg`, `busybox`, `curl`, and `jq`. Because OpenShift blocks runtime package installation (`apk add`) under dynamic non-root UIDs (`Permission denied`), pre-baking binaries guarantees instant startup without egress network dependencies.
-5. **Zero-Touch Auto-Initialization & Auto-Unsealing (Model 1)**:
-   - **HTTP 501 (Uninitialized)**: The sidecar daemon detects uninitialized status, reads your mounted base64 PGP public key, calls Vault's `/v1/sys/init` REST API, receives the 3 PGP-encrypted key shares, parses them cleanly with `jq`, and patches the `vault-unseal-keys` Kubernetes Secret via the Kubernetes REST API using dedicated RBAC permissions (`kubernetes_role.vault_secret_writer`).
+5. **Zero-Touch Auto-Initialization with Root Token Persistence (Model 1)**:
+   - **HTTP 501 (Uninitialized)**: The sidecar daemon detects uninitialized status, reads your mounted base64 PGP public key, calls Vault's `/v1/sys/init` REST API with `"root_token_pgp_key": "$PUBKEY"`, receives the 3 PGP-encrypted key shares AND the PGP-encrypted root token, parses them cleanly with `jq`, and patches the `vault-unseal-keys` Kubernetes Secret (`root_token_pgp` included) via the Kubernetes REST API using dedicated RBAC permissions (`kubernetes_role.vault_secret_writer`).
    - **HTTP 500 (Sealed)**: The sidecar daemon reads the encrypted unseal key shares, decrypts them in memory via GPG (using `--homedir /tmp/gnupg` for OpenShift non-root compatibility and loopback passphrase support), strips newlines via `tr -d '
 '`, and submits unseal shares sequentially to `/v1/sys/unseal` using `curl -X PUT`.
 
@@ -77,42 +77,28 @@ terraform apply /tmp/plan
 
 ---
 
-## 3. Verification & Troubleshooting
+## 3. Retrieving and Decrypting the Root Token
 
-### Check Pod Status
+Once Vault auto-initializes and unseals, the encrypted root token is stored directly in Kubernetes:
+
+### On Your Workstation:
 ```bash
-oc get pods -n vault
+oc get secret vault-unseal-keys -n vault -o jsonpath='{.data.root_token_pgp}' \
+  | base64 -d \
+  | gpg --decrypt
 ```
-Both `vault-0` and `vault-agent-injector` will transition to `1/1 Running` (or `2/2 Running` with sidecar).
 
-### Check Sidecar Execution Logs
+### Inside the Sidecar Pod:
 ```bash
-oc logs -n vault pod/vault-0 -c vault-auto-unsealer
+oc exec -n vault pod/vault-0 -c vault-auto-unsealer -- /bin/sh -c '
+export GNUPGHOME=/tmp/gnupg
+if [ -f /vault/gpg/passphrase ] && [ -s /vault/gpg/passphrase ]; then
+  cat /vault/unseal/root_token_pgp | base64 -d | gpg --homedir /tmp/gnupg --decrypt --batch --pinentry-mode loopback --passphrase-file /vault/gpg/passphrase --quiet
+else
+  cat /vault/unseal/root_token_pgp | base64 -d | gpg --homedir /tmp/gnupg --decrypt --batch --quiet
+fi
+'
 ```
-
-*Expected Log Output:*
-```text
-Starting Vault Zero-Touch Auto-Init & Auto-Unseal daemon...
-Vault is uninitialized (HTTP 501). Executing auto-initialization...
-Vault initialized successfully. Saving unseal keys to Kubernetes secret 'vault-unseal-keys'...
-Secret updated successfully. Proceeding to unseal...
-Vault is sealed! Decrypting keys and submitting...
-Unseal key submitted (/vault/unseal/unseal_key_1_pgp). Response: {"type":"shamir",...,"progress":1}
-Unseal key submitted (/vault/unseal/unseal_key_2_pgp). Response: {"type":"shamir",...,"progress":2}
-Unseal key submitted (/vault/unseal/unseal_key_3_pgp). Response: {"type":"shamir",...,"sealed":false}
-```
-
-### Check Persisted Unseal Keys Secret
-```bash
-oc get secret vault-unseal-keys -n vault -o jsonpath='{.data}'
-```
-Keys `unseal_key_1_pgp`, `unseal_key_2_pgp`, and `unseal_key_3_pgp` will be populated with the base64 PGP-encrypted ciphertext key shares.
-
-### Verify Unseal Status via CLI
-```bash
-oc exec -n vault pod/vault-0 -c vault -- vault status
-```
-Output will report `Sealed: false` and `Initialized: true`.
 
 ---
 
@@ -125,7 +111,10 @@ If an initial auto-init attempt failed due to missing tools or bad credentials a
 oc delete statefulset vault -n vault
 oc delete pvc -l app.kubernetes.io/name=vault -n vault
 
-# 2. Re-apply Terraform to redeploy Vault and trigger a clean zero-touch boot
+# 2. Reset the secret keys to empty defaults
+oc patch secret vault-unseal-keys -n vault --type=merge -p '{"data":{"unseal_key_1_pgp":"","unseal_key_2_pgp":"","unseal_key_3_pgp":"","root_token_pgp":""}}'
+
+# 3. Re-apply Terraform to redeploy Vault and trigger a clean zero-touch boot
 terraform apply
 ```
 
@@ -137,8 +126,8 @@ terraform apply
 | :--- | :--- |
 | `versions.tf` | Terraform & provider version pins (`helm ~> 2.12.0`, `kubernetes ~> 2.26.0`). |
 | `variables.tf` | Input variables, validation rules, and default container image tags. |
-| `main.tf` | Namespace, Kubernetes Secrets, RBAC Role/Binding, Raft storage, OpenShift SCC integration (`global.openshift = true`), and the sidecar auto-init/unseal daemon script using `curl`, `wget`, and `jq`. |
+| `main.tf` | Namespace, Kubernetes Secrets, RBAC Role/Binding, Raft storage, OpenShift SCC integration (`global.openshift = true`), and the sidecar auto-init/unseal daemon script with `root_token_pgp` capture. |
 | `outputs.tf` | Output variables for namespace, unseal strategy, and container image tags. |
-| `terraform.tfvars.example` | Example variable configuration template for Model 1 deployment. |
+| `terraform.tfvars.example` | Example variable configuration template with Model 1 and Model 2 / Cloud KMS sections restored. |
 | `Dockerfile` | Lightweight Alpine image pre-baked with `gnupg`, `busybox`, `curl`, and `jq` for non-root OpenShift execution. |
-| `README.md` | Comprehensive architectural principles, setup instructions, and troubleshooting commands. |
+| `README.md` | Comprehensive architectural principles, setup instructions, root token retrieval, and troubleshooting commands. |
