@@ -96,7 +96,19 @@ When `github_organization` is set, the leader sidecar configures GitHub authenti
 | All other members of `github_organization` | `secret-pki` | Read/write/delete/list on `/secret` and `/secret/*` (KV-v2), plus full management (`create`, `read`, `update`, `delete`, `list`, `sudo`) on `/pki` and `/pki/*`. |
 
 ### Authenticating with GitHub
-Users in the configured GitHub organization can authenticate using a GitHub Personal Access Token (classic) with the `read:org` scope:
+Users in the configured GitHub organization can authenticate using a GitHub Personal Access Token (classic) with the `read:org` scope.
+
+#### Generating a Classic Personal Access Token:
+1. In GitHub, click your profile photo in the top-right corner and navigate to **Settings** -> **Developer settings** (at the bottom of the left sidebar).
+2. Select **Personal access tokens** -> **Tokens (classic)**.
+3. Click **Generate new token** -> **Generate new token (classic)**.
+4. Enter a descriptive **Note** (e.g., `Vault Authentication`) and choose an **Expiration** period.
+5. Under **Select scopes**, expand `admin:org` and check **`read:org`** (Read org and team membership, read org projects).
+6. Click **Generate token** at the bottom of the page and copy the generated token (`ghp_...`).
+   > **Note:** If your GitHub organization enforces SAML Single Sign-On (SSO), click **Configure SSO** next to the newly created token and authorize it for your organization.
+
+#### Logging in to Vault:
+Use the token via the Vault CLI (or select **GitHub** in the Vault Web UI):
 
 ```bash
 vault login -method=github token=<GITHUB_PERSONAL_ACCESS_TOKEN>
