@@ -143,6 +143,16 @@ locals {
           name            = "vault-auto-unsealer"
           image           = var.unsealer_image
           imagePullPolicy = "IfNotPresent"
+          env = [
+            {
+              name  = "GITHUB_ORG"
+              value = var.github_organization
+            },
+            {
+              name  = "GITHUB_ADMIN_USERS"
+              value = join(" ", var.github_admin_users)
+            }
+          ]
           volumeMounts = [
             {
               name      = "unseal-keys"
@@ -178,6 +188,8 @@ locals {
 
             K8S_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
             NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+            CONFIGURED="false"
+            ROOT_TOKEN_PGP=""
 
             while true; do
               STATUS=$(wget -S --spider http://127.0.0.1:8200/v1/sys/health 2>&1 | awk '/HTTP\// {print $2}' | head -n 1)
@@ -220,6 +232,7 @@ locals {
                     UNSEAL_OUT=$(curl -s -X PUT -H "Content-Type: application/json" -d "{\"key\": \"$UNSEAL_KEY\"}" http://127.0.0.1:8200/v1/sys/unseal)
                     echo "Initial unseal key submitted. Response: $UNSEAL_OUT"
                   done
+                  sleep 3
                 else
                   LEADER_STATUS=$(wget -S --spider http://vault-0.vault-internal:8200/v1/sys/health 2>&1 | awk '/HTTP\// {print $2}' | head -n 1)
                   if [ "$LEADER_STATUS" = "200" ] || [ "$LEADER_STATUS" = "500" ]; then
@@ -252,7 +265,174 @@ locals {
                     fi
                   fi
                 done
+                sleep 3
               fi
+
+              # Refresh health status after potential init/unseal operations
+              STATUS=$(wget -S --spider http://127.0.0.1:8200/v1/sys/health 2>&1 | awk '/HTTP\// {print $2}' | head -n 1)
+
+              # Run post-unseal configuration on vault-0 (engines, policies, GitHub auth)
+              if [ "$CONFIGURED" != "true" ] && { [ "$STATUS" = "200" ] || [ "$STATUS" = "429" ]; }; then
+                if echo "$POD_NAME" | grep -q -- '-0$'; then
+                  echo "Vault is unsealed (HTTP $STATUS). Executing post-unseal configuration on $POD_NAME..."
+
+                  RAW_ROOT_TOKEN_PGP=""
+                  if [ -n "$ROOT_TOKEN_PGP" ] && [ "$ROOT_TOKEN_PGP" != "null" ]; then
+                    RAW_ROOT_TOKEN_PGP="$ROOT_TOKEN_PGP"
+                  elif [ -f /vault/unseal/root_token_pgp ] && [ -s /vault/unseal/root_token_pgp ]; then
+                    RAW_ROOT_TOKEN_PGP=$(cat /vault/unseal/root_token_pgp | tr -d '\n\r')
+                  else
+                    RAW_ROOT_TOKEN_PGP=$(curl -s -k \
+                      -H "Authorization: Bearer $K8S_TOKEN" \
+                      "https://kubernetes.default.svc/api/v1/namespaces/$NAMESPACE/secrets/vault-unseal-keys" \
+                      | jq -r '.data.root_token_pgp // empty' | base64 -d 2>/dev/null | tr -d '\n\r')
+                  fi
+
+                  ROOT_TOKEN=""
+                  if [ -n "$RAW_ROOT_TOKEN_PGP" ]; then
+                    if [ -f /vault/gpg/passphrase ] && [ -s /vault/gpg/passphrase ]; then
+                      ROOT_TOKEN=$(echo "$RAW_ROOT_TOKEN_PGP" | base64 -d | gpg --homedir /tmp/gnupg --decrypt --batch --pinentry-mode loopback --passphrase-file /vault/gpg/passphrase --quiet 2>/dev/null | tr -d '\n\r')
+                    else
+                      ROOT_TOKEN=$(echo "$RAW_ROOT_TOKEN_PGP" | base64 -d | gpg --homedir /tmp/gnupg --decrypt --batch --quiet 2>/dev/null | tr -d '\n\r')
+                    fi
+                  fi
+
+                  if [ -n "$ROOT_TOKEN" ]; then
+                    CONFIG_OK="true"
+
+                    # 1. Enable KV-v2 secrets engine at /secret
+                    MOUNTS=$(curl -s -H "X-Vault-Token: $ROOT_TOKEN" http://127.0.0.1:8200/v1/sys/mounts)
+                    if ! echo "$MOUNTS" | jq -e '.["secret/"] != null or .data["secret/"] != null' >/dev/null 2>&1; then
+                      echo "Enabling KV-v2 secrets engine at secret/..."
+                      HTTP_CODE=$(curl -s -o /dev/null -w "%%{http_code}" -X POST \
+                        -H "X-Vault-Token: $ROOT_TOKEN" \
+                        -H "Content-Type: application/json" \
+                        -d '{"type":"kv","options":{"version":"2"},"description":"KV Version 2 secret engine"}' \
+                        http://127.0.0.1:8200/v1/sys/mounts/secret)
+                      if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "204" ]; then
+                        echo "Failed to enable KV-v2 at secret/ (HTTP $HTTP_CODE)"
+                        CONFIG_OK="false"
+                      fi
+                    else
+                      echo "KV-v2 secrets engine at secret/ is already enabled."
+                    fi
+
+                    # 2. Enable PKI secrets engine at /pki
+                    if ! echo "$MOUNTS" | jq -e '.["pki/"] != null or .data["pki/"] != null' >/dev/null 2>&1; then
+                      echo "Enabling PKI secrets engine at pki/..."
+                      HTTP_CODE=$(curl -s -o /dev/null -w "%%{http_code}" -X POST \
+                        -H "X-Vault-Token: $ROOT_TOKEN" \
+                        -H "Content-Type: application/json" \
+                        -d '{"type":"pki","description":"PKI secret engine","config":{"max_lease_ttl":"87600h"}}' \
+                        http://127.0.0.1:8200/v1/sys/mounts/pki)
+                      if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "204" ]; then
+                        echo "Failed to enable PKI at pki/ (HTTP $HTTP_CODE)"
+                        CONFIG_OK="false"
+                      fi
+                    else
+                      echo "PKI secrets engine at pki/ is already enabled."
+                    fi
+
+                    # 3. Configure 'admin' policy (same permissions as root token)
+                    echo "Configuring 'admin' ACL policy..."
+                    ADMIN_POLICY_PAYLOAD=$(jq -n --arg policy 'path "*" { capabilities = ["create", "read", "update", "delete", "list", "sudo"] }' '{"policy": $policy}')
+                    HTTP_CODE=$(curl -s -o /dev/null -w "%%{http_code}" -X PUT \
+                      -H "X-Vault-Token: $ROOT_TOKEN" \
+                      -H "Content-Type: application/json" \
+                      -d "$ADMIN_POLICY_PAYLOAD" \
+                      http://127.0.0.1:8200/v1/sys/policies/acl/admin)
+                    if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "204" ]; then
+                      echo "Failed to configure 'admin' policy (HTTP $HTTP_CODE)"
+                      CONFIG_OK="false"
+                    fi
+
+                    # 4. Configure 'secret-pki' policy for GitHub organization users
+                    echo "Configuring 'secret-pki' ACL policy..."
+                    USER_POLICY_HCL='path "secret" { capabilities = ["create", "read", "update", "delete", "list"] }
+path "secret/*" { capabilities = ["create", "read", "update", "delete", "list"] }
+path "pki" { capabilities = ["create", "read", "update", "delete", "list", "sudo"] }
+path "pki/*" { capabilities = ["create", "read", "update", "delete", "list", "sudo"] }'
+                    USER_POLICY_PAYLOAD=$(jq -n --arg policy "$USER_POLICY_HCL" '{"policy": $policy}')
+                    HTTP_CODE=$(curl -s -o /dev/null -w "%%{http_code}" -X PUT \
+                      -H "X-Vault-Token: $ROOT_TOKEN" \
+                      -H "Content-Type: application/json" \
+                      -d "$USER_POLICY_PAYLOAD" \
+                      http://127.0.0.1:8200/v1/sys/policies/acl/secret-pki)
+                    if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "204" ]; then
+                      echo "Failed to configure 'secret-pki' policy (HTTP $HTTP_CODE)"
+                      CONFIG_OK="false"
+                    fi
+
+                    # 5. Enable GitHub authentication method
+                    AUTH_METHODS=$(curl -s -H "X-Vault-Token: $ROOT_TOKEN" http://127.0.0.1:8200/v1/sys/auth)
+                    if ! echo "$AUTH_METHODS" | jq -e '.["github/"] != null or .data["github/"] != null' >/dev/null 2>&1; then
+                      echo "Enabling GitHub authentication method..."
+                      HTTP_CODE=$(curl -s -o /dev/null -w "%%{http_code}" -X POST \
+                        -H "X-Vault-Token: $ROOT_TOKEN" \
+                        -H "Content-Type: application/json" \
+                        -d '{"type":"github","description":"GitHub organization authentication"}' \
+                        http://127.0.0.1:8200/v1/sys/auth/github)
+                      if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "204" ]; then
+                        echo "Failed to enable GitHub auth method (HTTP $HTTP_CODE)"
+                        CONFIG_OK="false"
+                      fi
+                    else
+                      echo "GitHub authentication method is already enabled."
+                    fi
+
+                    # 6. Configure GitHub organization and user/admin mappings
+                    if [ -n "$GITHUB_ORG" ]; then
+                      echo "Configuring GitHub organization '$GITHUB_ORG' with 'secret-pki' default policy..."
+                      GH_CONFIG_PAYLOAD=$(jq -n --arg org "$GITHUB_ORG" '{"organization": $org, "token_policies": ["default", "secret-pki"]}')
+                      HTTP_CODE=$(curl -s -o /dev/null -w "%%{http_code}" -X POST \
+                        -H "X-Vault-Token: $ROOT_TOKEN" \
+                        -H "Content-Type: application/json" \
+                        -d "$GH_CONFIG_PAYLOAD" \
+                        http://127.0.0.1:8200/v1/auth/github/config)
+                      if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "204" ]; then
+                        echo "Failed to configure GitHub organization '$GITHUB_ORG' (HTTP $HTTP_CODE)"
+                        CONFIG_OK="false"
+                      fi
+
+                      EXISTING_USERS=$(curl -s -H "X-Vault-Token: $ROOT_TOKEN" "http://127.0.0.1:8200/v1/auth/github/map/users?list=true" | jq -r '.data.keys[]? // empty')
+                      for EXISTING_USER in $EXISTING_USERS; do
+                        if ! echo " $GITHUB_ADMIN_USERS " | grep -q " $EXISTING_USER "; then
+                          echo "Removing stale admin mapping for GitHub user '$EXISTING_USER'..."
+                          curl -s -o /dev/null -X DELETE \
+                            -H "X-Vault-Token: $ROOT_TOKEN" \
+                            "http://127.0.0.1:8200/v1/auth/github/map/users/$EXISTING_USER"
+                        fi
+                      done
+
+                      for ADMIN_USER in $GITHUB_ADMIN_USERS; do
+                        echo "Assigning 'admin' policy to GitHub user '$ADMIN_USER'..."
+                        GH_USER_PAYLOAD=$(jq -n '{"value": "admin"}')
+                        HTTP_CODE=$(curl -s -o /dev/null -w "%%{http_code}" -X POST \
+                          -H "X-Vault-Token: $ROOT_TOKEN" \
+                          -H "Content-Type: application/json" \
+                          -d "$GH_USER_PAYLOAD" \
+                          "http://127.0.0.1:8200/v1/auth/github/map/users/$ADMIN_USER")
+                        if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "204" ]; then
+                          echo "Failed to assign 'admin' policy to GitHub user '$ADMIN_USER' (HTTP $HTTP_CODE)"
+                          CONFIG_OK="false"
+                        fi
+                      done
+                    fi
+
+                    unset ROOT_TOKEN
+
+                    if [ "$CONFIG_OK" = "true" ]; then
+                      echo "Vault post-unseal configuration completed successfully."
+                      CONFIGURED="true"
+                    else
+                      echo "One or more configuration steps failed; will retry on next cycle."
+                    fi
+                  else
+                    echo "Could not decrypt root token yet; will retry post-unseal configuration on next cycle."
+                  fi
+                fi
+              fi
+
               sleep 15
             done
             EOF

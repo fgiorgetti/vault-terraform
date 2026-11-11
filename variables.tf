@@ -90,3 +90,15 @@ variable "gcp_kms_config" {
   default     = null
   description = "GCP Cloud KMS configuration parameters (required if unseal_type = 'gcpckms')."
 }
+
+variable "github_organization" {
+  type        = string
+  default     = ""
+  description = "GitHub organization name to enable for Vault GitHub authentication."
+}
+
+variable "github_admin_users" {
+  type        = list(string)
+  default     = []
+  description = "List of GitHub usernames from the organization to be granted admin (root-equivalent) permissions. All other users in the organization receive access to /secret (KV-v2) and /pki."
+}

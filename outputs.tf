@@ -22,3 +22,13 @@ output "server_image_tag" {
   value       = var.server_image_tag
   description = "Applied Vault Server UBI container tag."
 }
+
+output "github_organization" {
+  value       = var.github_organization
+  description = "Configured GitHub organization for Vault authentication."
+}
+
+output "github_admin_users" {
+  value       = var.github_admin_users
+  description = "Configured GitHub usernames mapped to the Vault 'admin' policy."
+}

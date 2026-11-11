@@ -1,6 +1,6 @@
 # HashiCorp Vault Zero-Touch Deployment on OpenShift via Terraform (Model 1)
 
-This repository provides a fully automated, production-ready Terraform module to deploy High-Availability (HA) HashiCorp Vault on OpenShift or Kubernetes using Helm, featuring **Model 1: Zero-Touch Auto-Initialization**, dynamic PGP key and root token persistence, Raft storage, and OpenShift `restricted-v2` Security Context Constraint (SCC) compliance.
+This repository provides a fully automated, production-ready Terraform module to deploy High-Availability (HA) HashiCorp Vault on OpenShift or Kubernetes using Helm, featuring **Model 1: Zero-Touch Auto-Initialization**, dynamic PGP key and root token persistence, automated secrets engine & GitHub authentication provisioning, Raft storage, and OpenShift `restricted-v2` Security Context Constraint (SCC) compliance.
 
 ---
 
@@ -19,6 +19,13 @@ This repository provides a fully automated, production-ready Terraform module to
    - **Leader Guard**: Only `vault-0` (`*-0$`) is permitted to call `/v1/sys/init`. Follower replicas (`vault-1`, `vault-2`) wait for `vault-0` to form the cluster to avoid multi-replica init race conditions (split-brain).
    - **In-Memory Initial Unseal**: Upon initialization, `vault-0` unseals itself directly in memory using the fresh unseal shares without waiting for Kubernetes volume mount sync or reading stale files from disk.
    - **Buffer Reset**: Sends `{"reset": true}` prior to submitting shares, ensuring partial attempts never poison the unseal threshold.
+6. **Automated Post-Unseal Engines, Policies & GitHub Authentication**:
+   - Once `vault-0` is unsealed, the leader sidecar decrypts the root token in memory and idempotently configures:
+     - **KV-v2 Secrets Engine** mounted at `/secret`.
+     - **PKI Secrets Engine** mounted at `/pki` (with `max_lease_ttl = 87600h`).
+     - **`admin` ACL Policy**: Full root-equivalent permissions (`create`, `read`, `update`, `delete`, `list`, `sudo` on `*`).
+     - **`secret-pki` ACL Policy**: Full access to `/secret` and `/secret/*` (KV-v2) and full PKI management (`create`, `read`, `update`, `delete`, `list`, `sudo`) on `/pki` and `/pki/*`.
+     - **GitHub Auth Method (`/auth/github`)**: Configured for `github_organization` so all organization members receive the `secret-pki` policy by default, while users listed in `github_admin_users` are mapped to the `admin` policy.
 
 ---
 
@@ -65,6 +72,9 @@ unseal_type           = "sidecar"
 pgp_public_key_base64 = "<PASTE_BASE64_PUBLIC_KEY_HERE>"
 gpg_private_key_path  = "./vault-unseal-private.asc"
 gpg_key_passphrase    = "YourPassphraseIfAny"
+
+github_organization   = "your-github-org"
+github_admin_users    = ["octocat"]
 ```
 
 ### Step 4: Deploy with Terraform
@@ -76,7 +86,25 @@ terraform apply /tmp/plan
 
 ---
 
-## 3. Retrieving and Decrypting the Root Token
+## 3. GitHub Authentication & RBAC Policies
+
+When `github_organization` is set, the leader sidecar configures GitHub authentication automatically upon unsealing:
+
+| Role / Group | Assigned Policy | Permissions |
+| :--- | :--- | :--- |
+| Users in `github_admin_users` | `admin` | Root-equivalent permissions (`create`, `read`, `update`, `delete`, `list`, `sudo`) on all paths (`*`). |
+| All other members of `github_organization` | `secret-pki` | Read/write/delete/list on `/secret` and `/secret/*` (KV-v2), plus full management (`create`, `read`, `update`, `delete`, `list`, `sudo`) on `/pki` and `/pki/*`. |
+
+### Authenticating with GitHub
+Users in the configured GitHub organization can authenticate using a GitHub Personal Access Token (classic) with the `read:org` scope:
+
+```bash
+vault login -method=github token=<GITHUB_PERSONAL_ACCESS_TOKEN>
+```
+
+---
+
+## 4. Retrieving and Decrypting the Root Token
 
 Once Vault auto-initializes and unseals, the encrypted root token is stored directly in Kubernetes.
 
@@ -101,7 +129,7 @@ oc get secret vault-unseal-keys -n vault -o jsonpath='{.data.root_token_pgp}' \
 
 ---
 
-## 4. Resetting Storage (If Re-Initialization Is Required)
+## 5. Resetting Storage (If Re-Initialization Is Required)
 
 If an initial auto-init attempt failed due to missing tools or bad credentials and left Vault initialized on Raft storage without saved keys:
 
@@ -119,15 +147,15 @@ terraform apply
 
 ---
 
-## 5. File Structure Reference
+## 6. File Structure Reference
 
 | File | Purpose |
 | :--- | :--- |
 | `versions.tf` | Terraform & provider version pins (`helm ~> 2.12.0`, `kubernetes ~> 2.26.0`). |
-| `variables.tf` | Input variables, validation rules, and default container image tags. |
-| `main.tf` | Namespace, Kubernetes Secrets, RBAC Role/Binding, Raft storage, OpenShift SCC integration (`global.openshift = true`), leader-guarded auto-init, in-memory unseal, and `root_token_pgp` capture. |
-| `outputs.tf` | Output variables for namespace, unseal strategy, and container image tags. |
-| `terraform.tfvars.example` | Example variable configuration template with Model 1 and Model 2 / Cloud KMS sections. |
+| `variables.tf` | Input variables, validation rules, default container image tags, and GitHub auth settings (`github_organization`, `github_admin_users`). |
+| `main.tf` | Namespace, Kubernetes Secrets, RBAC Role/Binding, Raft storage, OpenShift SCC integration (`global.openshift = true`), leader-guarded auto-init, in-memory unseal, `root_token_pgp` capture, and post-unseal provisioning of `/secret` (KV-v2), `/pki`, ACL policies, and GitHub auth. |
+| `outputs.tf` | Output variables for namespace, unseal strategy, container image tags, and GitHub auth configuration. |
+| `terraform.tfvars.example` | Example variable configuration template with Model 1, GitHub authentication, and Model 2 / Cloud KMS sections. |
 | `retrieve-root-token.sh` | Shell script to fetch and decrypt the root token from Kubernetes using GPG. |
 | `Dockerfile` | Red Hat UBI minimal image pre-baked with `gnupg`, `wget`, `curl`, `jq`, and `gawk` for non-root OpenShift execution. |
-| `README.md` | Comprehensive architectural principles, setup instructions, root token retrieval, and troubleshooting commands. |
+| `README.md` | Comprehensive architectural principles, setup instructions, GitHub authentication details, root token retrieval, and troubleshooting commands. |

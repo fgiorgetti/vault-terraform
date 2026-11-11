@@ -28,6 +28,18 @@ gpg_private_key_path = "./vault-unseal-private.asc"
 gpg_key_passphrase = "YourSecretPassphraseHere"
 
 # -----------------------------------------------------------------------------
+# GitHub Authentication & RBAC Configuration
+# -----------------------------------------------------------------------------
+# GitHub organization whose members are permitted to authenticate with Vault.
+# Non-admin members are automatically granted access to /secret (KV-v2) and /pki.
+github_organization = "your-github-org"
+
+# GitHub usernames within the organization assigned the 'admin' policy (same permissions as root token)
+github_admin_users = [
+  "octocat"
+]
+
+# -----------------------------------------------------------------------------
 # Optional Configuration for Pre-Existing Unseal Keys (Model 2 fallback)
 # -----------------------------------------------------------------------------
 # pgp_encrypted_keys = [
