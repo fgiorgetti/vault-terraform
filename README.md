@@ -25,7 +25,7 @@ This repository provides a fully automated, production-ready Terraform module to
      - **PKI Secrets Engine** mounted at `/pki` (with `max_lease_ttl = 87600h`).
      - **`admin` ACL Policy**: Full root-equivalent permissions (`create`, `read`, `update`, `delete`, `list`, `sudo` on `*`).
      - **`secret-pki` ACL Policy**: Full access to `/secret` and `/secret/*` (KV-v2) and full PKI management (`create`, `read`, `update`, `delete`, `list`, `sudo`) on `/pki` and `/pki/*`.
-     - **GitHub Auth Method (`/auth/github`)**: Configured for `github_organization` so all organization members receive the `secret-pki` policy by default, while users listed in `github_admin_users` are mapped to the `admin` policy.
+     - **GitHub Auth Method (`/auth/github`)**: Enabled with `listing_visibility = "unauth"` (making GitHub the default login option in the Vault UI) and configured for `github_organization` so all organization members receive the `secret-pki` policy by default, while users listed in `github_admin_users` are mapped to the `admin` policy.
 
 ---
 

@@ -363,21 +363,30 @@ path "pki/*" { capabilities = ["create", "read", "update", "delete", "list", "su
                       CONFIG_OK="false"
                     fi
 
-                    # 5. Enable GitHub authentication method
+                    # 5. Enable GitHub authentication method and set as default in Vault UI (listing_visibility=unauth)
                     AUTH_METHODS=$(curl -s -H "X-Vault-Token: $ROOT_TOKEN" http://127.0.0.1:8200/v1/sys/auth)
                     if ! echo "$AUTH_METHODS" | jq -e '.["github/"] != null or .data["github/"] != null' >/dev/null 2>&1; then
                       echo "Enabling GitHub authentication method..."
                       HTTP_CODE=$(curl -s -o /dev/null -w "%%{http_code}" -X POST \
                         -H "X-Vault-Token: $ROOT_TOKEN" \
                         -H "Content-Type: application/json" \
-                        -d '{"type":"github","description":"GitHub organization authentication"}' \
+                        -d '{"type":"github","description":"GitHub organization authentication","config":{"listing_visibility":"unauth"}}' \
                         http://127.0.0.1:8200/v1/sys/auth/github)
                       if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "204" ]; then
                         echo "Failed to enable GitHub auth method (HTTP $HTTP_CODE)"
                         CONFIG_OK="false"
                       fi
                     else
-                      echo "GitHub authentication method is already enabled."
+                      echo "GitHub authentication method is already enabled. Tuning listing_visibility to 'unauth'..."
+                      HTTP_CODE=$(curl -s -o /dev/null -w "%%{http_code}" -X POST \
+                        -H "X-Vault-Token: $ROOT_TOKEN" \
+                        -H "Content-Type: application/json" \
+                        -d '{"listing_visibility":"unauth"}' \
+                        http://127.0.0.1:8200/v1/sys/auth/github/tune)
+                      if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "204" ]; then
+                        echo "Failed to tune GitHub auth method listing_visibility (HTTP $HTTP_CODE)"
+                        CONFIG_OK="false"
+                      fi
                     fi
 
                     # 6. Configure GitHub organization and user/admin mappings
