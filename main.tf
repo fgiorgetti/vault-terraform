@@ -121,7 +121,7 @@ locals {
     }
   }
 
-  # Sidecar Helm values using pre-baked custom image (GPG, BusyBox, curl, jq)
+  # Sidecar Helm values using pre-baked custom image (GPG, wget, curl, jq, gawk)
   sidecar_values = {
     server = {
       volumes = [

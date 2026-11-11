@@ -14,7 +14,7 @@ This repository provides a fully automated, production-ready Terraform module to
 3. **Raft Integrated Storage Engine**:
    - Configured via `server.ha.raft.enabled = true` with 10Gi persistent volumes (`server.dataStorage.enabled = true`), eliminating external Consul cluster dependencies.
 4. **Pre-Baked Sidecar Image (`Dockerfile`)**:
-   - Runs a lightweight sidecar image containing `gnupg`, `busybox`, `curl`, and `jq`. Because OpenShift blocks runtime package installation (`apk add`) under dynamic non-root UIDs (`Permission denied`), pre-baking binaries guarantees instant startup without egress network dependencies.
+   - Runs a lightweight sidecar image containing `gnupg`, `wget`, `curl`, `jq`, and `gawk`, built on Red Hat UBI minimal. Because OpenShift blocks runtime package installation (`microdnf install`) under dynamic non-root UIDs (`Permission denied`), pre-baking binaries guarantees instant startup without egress network dependencies.
 5. **Zero-Touch Auto-Initialization with Leader Election Guard (Model 1)**:
    - **Leader Guard**: Only `vault-0` (`*-0$`) is permitted to call `/v1/sys/init`. Follower replicas (`vault-1`, `vault-2`) wait for `vault-0` to form the cluster to avoid multi-replica init race conditions (split-brain).
    - **In-Memory Initial Unseal**: Upon initialization, `vault-0` unseals itself directly in memory using the fresh unseal shares without waiting for Kubernetes volume mount sync or reading stale files from disk.
@@ -129,5 +129,5 @@ terraform apply
 | `outputs.tf` | Output variables for namespace, unseal strategy, and container image tags. |
 | `terraform.tfvars.example` | Example variable configuration template with Model 1 and Model 2 / Cloud KMS sections. |
 | `retrieve-root-token.sh` | Shell script to fetch and decrypt the root token from Kubernetes using GPG. |
-| `Dockerfile` | Lightweight Alpine image pre-baked with `gnupg`, `busybox`, `curl`, and `jq` for non-root OpenShift execution. |
+| `Dockerfile` | Red Hat UBI minimal image pre-baked with `gnupg`, `wget`, `curl`, `jq`, and `gawk` for non-root OpenShift execution. |
 | `README.md` | Comprehensive architectural principles, setup instructions, root token retrieval, and troubleshooting commands. |

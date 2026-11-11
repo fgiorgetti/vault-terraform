@@ -31,7 +31,7 @@ variable "server_image_tag" {
 variable "unsealer_image" {
   type        = string
   default     = "your-registry.domain.com/vault/vault-unsealer:v1.0.0"
-  description = "Custom sidecar container image with pre-installed GPG, BusyBox, curl, and jq for OpenShift SCC dynamic non-root UIDs."
+  description = "Custom sidecar container image with pre-installed GPG, wget, curl, jq, and gawk for OpenShift SCC dynamic non-root UIDs."
 }
 
 variable "unseal_type" {

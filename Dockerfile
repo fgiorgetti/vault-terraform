@@ -1,3 +1,4 @@
-FROM alpine:3.19
-RUN apk add --no-cache gnupg busybox curl jq
+FROM registry.redhat.io/ubi9/ubi-minimal:latest
+RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 gnupg2 jq wget gawk hostname \
+    && microdnf clean all
 USER 10001
